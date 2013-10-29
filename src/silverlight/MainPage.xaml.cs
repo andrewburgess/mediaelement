@@ -1,57 +1,63 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
 using System.Linq;
-using System.Net;
 using System.Windows;
+using System.Windows.Browser;
 using System.Windows.Controls;
-using System.Windows.Documents;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
-using System.Windows.Shapes;
-using System.Windows.Browser;
-using System.Globalization;
+using System.Windows.Threading;
 
+using Vdms.Hls.Mss.HLSMSSImplementation;
 
 namespace SilverlightMediaElement
 {
 	[ScriptableType]
-	public partial class MainPage : UserControl
+	public partial class MainPage : UserControl, IVariantSelector
 	{
-		System.Windows.Threading.DispatcherTimer _timer;
-			
+		private readonly DispatcherTimer _timer;
+		private readonly TimeSpan _bufferLength = TimeSpan.FromSeconds(30.0);
+
 		// work arounds for src, load(), play() compatibility
-		bool _isLoading = false;
-		bool _isAttemptingToPlay = false;
+		private bool _isLoading;
+		private bool _isAttemptingToPlay;
 
 		// variables
-		string _mediaUrl;
-		string _preload;
-		string _htmlid;
-		bool _autoplay = false;
-		bool _debug = false;
-		int _width = 0;
-		int _height = 0;
-		int _timerRate = 0;
-		double _bufferedBytes = 0;
-		double _bufferedTime = 0;
-		double _volume = 1;
-		int _videoWidth = 0;
-		int _videoHeight = 0;
+		private string _mediaUrl;
+		private readonly string _preload;
+		private readonly string _htmlid;
+		private readonly bool _autoplay;
+		private readonly bool _debug;
+		private readonly int _width;
+		private readonly int _height;
+		private readonly int _timerRate;
+		private double _bufferedBytes;
+		private double _bufferedTime;
+		private readonly double _volume = 1;
+		private int _videoWidth;
+		private int _videoHeight;
 
 		// state
-		bool _isPaused = true;
-		bool _isEnded = false;
+		private bool _isPaused = true;
+		private bool _isEnded;
 
 		// dummy
-		bool _firedCanPlay = false;
+		private bool _firedCanPlay;
 
-        // mediaElement.Position updates TimelineSlider.Value, and
-        // updating TimelineSlider.Value updates mediaElement.Position, 
-        // this variable helps us break the infinite loop
-        private bool duringTickEvent = false;
+		// mediaElement.Position updates TimelineSlider.Value, and
+		// updating TimelineSlider.Value updates mediaElement.Position, 
+		// this variable helps us break the infinite loop
+		private bool duringTickEvent;
 
-        private bool playVideoWhenSliderDragIsOver = false;
+		private bool playVideoWhenSliderDragIsOver;
+
+		protected HLSMediaStreamSource _mss;
+		private List<HLSVariant> _sortedAvailableVariants;
+		private volatile BitrateCommand _bitrateCommand;
 
 		public MainPage(IDictionary<string, string> initParams)
 		{
@@ -59,162 +65,193 @@ namespace SilverlightMediaElement
 
 			HtmlPage.RegisterScriptableObject("MediaElementJS", this);
 
-
 			// add events
-			media.BufferingProgressChanged += new RoutedEventHandler(media_BufferingProgressChanged);
-			media.DownloadProgressChanged += new RoutedEventHandler(media_DownloadProgressChanged);
-			media.CurrentStateChanged += new RoutedEventHandler(media_CurrentStateChanged);
-			media.MediaEnded += new RoutedEventHandler(media_MediaEnded);
-			media.MediaFailed += new EventHandler<ExceptionRoutedEventArgs>(media_MediaFailed);
-			media.MediaOpened += new RoutedEventHandler(media_MediaOpened);
-            media.MouseLeftButtonDown += new MouseButtonEventHandler(media_MouseLeftButtonDown);
-            CompositionTarget.Rendering += new EventHandler(CompositionTarget_Rendering);
-            transportControls.Visibility = System.Windows.Visibility.Collapsed;
+			media.BufferingProgressChanged += media_BufferingProgressChanged;
+			media.DownloadProgressChanged += media_DownloadProgressChanged;
+			media.CurrentStateChanged += media_CurrentStateChanged;
+			media.MediaEnded += media_MediaEnded;
+			media.MediaFailed += media_MediaFailed;
+			media.MediaOpened += media_MediaOpened;
+			media.MouseLeftButtonDown += media_MouseLeftButtonDown;
+			CompositionTarget.Rendering += CompositionTarget_Rendering;
+			transportControls.Visibility = Visibility.Collapsed;
 
 			// get parameters
 			if (initParams.ContainsKey("id"))
-				_htmlid = initParams["id"];			
+			{
+				_htmlid = initParams["id"];
+			}
 			if (initParams.ContainsKey("file"))
+			{
 				_mediaUrl = initParams["file"];
+			}
 			if (initParams.ContainsKey("autoplay") && initParams["autoplay"] == "true")
+			{
 				_autoplay = true;
+			}
 			if (initParams.ContainsKey("debug") && initParams["debug"] == "true")
+			{
 				_debug = true;
+			}
 			if (initParams.ContainsKey("preload"))
+			{
 				_preload = initParams["preload"].ToLower();
+			}
 			else
+			{
 				_preload = "";
+			}
 
-			if (!(new string[] { "none", "metadata", "auto" }).Contains(_preload)){
+			if (!(new[] { "none", "metadata", "auto" }).Contains(_preload))
+			{
 				_preload = "none";
 			}
 
-			if (initParams.ContainsKey("width")) 
-				Int32.TryParse(initParams["width"], out _width);			
-			if (initParams.ContainsKey("height")) 
+			if (initParams.ContainsKey("width"))
+			{
+				Int32.TryParse(initParams["width"], out _width);
+			}
+			if (initParams.ContainsKey("height"))
+			{
 				Int32.TryParse(initParams["height"], out _height);
+			}
 			if (initParams.ContainsKey("timerate"))
+			{
 				Int32.TryParse(initParams["timerrate"], out _timerRate);
+			}
 			if (initParams.ContainsKey("startvolume"))
+			{
 				Double.TryParse(initParams["startvolume"], out _volume);
+			}
 
 			if (_timerRate == 0)
+			{
 				_timerRate = 250;
+			}
 
 			// timer
-			_timer = new System.Windows.Threading.DispatcherTimer();
+			_timer = new DispatcherTimer();
 			_timer.Interval = new TimeSpan(0, 0, 0, 0, _timerRate); // 200 Milliseconds 
-			_timer.Tick += new EventHandler(timer_Tick);
+			_timer.Tick += timer_Tick;
 			_timer.Stop();
 
 			//_mediaUrl = "http://local.mediaelement.com/media/jsaddington.mp4";
 			//_autoplay = true;
-			
+
 			// set stage and media sizes
 			if (_width > 0)
+			{
 				LayoutRoot.Width = media.Width = this.Width = _width;
+			}
 			if (_height > 0)
-				LayoutRoot.Height = media.Height = this.Height = _height;			
-	 
-			// debug
-			textBox1.Visibility = (_debug) ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-			textBox1.IsEnabled = false;
-			textBox1.Text = "id: " + _htmlid + "\n" +
-							"file: " + _mediaUrl + "\n";
+			{
+				LayoutRoot.Height = media.Height = this.Height = _height;
+			}
 
+			// debug
+			debugPanel.Visibility = (_debug) ? Visibility.Visible : Visibility.Collapsed;
+			txtId.Text = "ID: " + _htmlid;
+			txtFile.Text = "File: " + _mediaUrl;
 
 			media.AutoPlay = _autoplay;
 			media.Volume = _volume;
-			if (!String.IsNullOrEmpty(_mediaUrl)) {
+			if (!String.IsNullOrEmpty(_mediaUrl))
+			{
 				setSrc(_mediaUrl);
 				if (_autoplay || _preload != "none")
+				{
 					loadMedia();
+				}
 			}
 
-			media.MouseLeftButtonUp += new MouseButtonEventHandler(media_MouseLeftButtonUp);
+			media.MouseLeftButtonUp += media_MouseLeftButtonUp;
 
 			// full screen settings
-			Application.Current.Host.Content.FullScreenChanged += new EventHandler(DisplaySizeInformation);
-			Application.Current.Host.Content.Resized += new EventHandler(DisplaySizeInformation);
+			Application.Current.Host.Content.FullScreenChanged += DisplaySizeInformation;
+			Application.Current.Host.Content.Resized += DisplaySizeInformation;
 			//FullscreenButton.Visibility = System.Windows.Visibility.Collapsed;
-		   
+
 			// send out init call			
 			//HtmlPage.Window.Invoke("html5_MediaPluginBridge_initPlugin", new object[] {_htmlid});
 			try
 			{
 				HtmlPage.Window.Eval("mejs.MediaPluginBridge.initPlugin('" + _htmlid + "');");
 			}
-			catch { }
+			catch
+			{
+			}
 		}
 
-        void media_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            switch (media.CurrentState)
-            {
-                case MediaElementState.Playing:
-                    pauseMedia();
-                    break;
+		private void media_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			switch (media.CurrentState)
+			{
+				case MediaElementState.Playing:
+					pauseMedia();
+					break;
 
-                case MediaElementState.Paused:
-                    playMedia();
-                    break;
-                case MediaElementState.Stopped:
-                    
-                    break;
-                case MediaElementState.Buffering:
-                    pauseMedia();
-                    break;
-            }
-        }
+				case MediaElementState.Paused:
+					playMedia();
+					break;
+				case MediaElementState.Stopped:
 
-		void media_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) {
+					break;
+				case MediaElementState.Buffering:
+					pauseMedia();
+					break;
+			}
+		}
+
+		private void media_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+		{
 			SendEvent("click");
 		}
 
-		void media_MediaOpened(object sender, RoutedEventArgs e) {
-
+		private void media_MediaOpened(object sender, RoutedEventArgs e)
+		{
 			_videoWidth = Convert.ToInt32(media.NaturalVideoWidth);
 			_videoHeight = Convert.ToInt32(media.NaturalVideoHeight);
-            
-            TimeSpan duration = media.NaturalDuration.TimeSpan;
-            totalTimeTextBlock.Text = TimeSpanToString(duration);
-            UpdateVideoSize();
 
-            playPauseButton.IsChecked = true;
+			var duration = media.NaturalDuration.TimeSpan;
+			totalTimeTextBlock.Text = TimeSpanToString(duration);
+			UpdateVideoSize();
+
+			playPauseButton.IsChecked = true;
 
 			SendEvent("loadedmetadata");
 		}
 
-		void timer_Tick(object sender, EventArgs e) {
+		private void timer_Tick(object sender, EventArgs e)
+		{
 			SendEvent("timeupdate");
 		}
 
-		void StartTimer() {
+		private void StartTimer()
+		{
 			_timer.Start();
 		}
 
-		void StopTimer() {
+		private void StopTimer()
+		{
 			_timer.Stop();
 		}
 
-		void WriteDebug(string text) {
-			textBox1.Text += text + "\n";
-		}
-
-		void media_MediaFailed(object sender, ExceptionRoutedEventArgs e) {
+		private void media_MediaFailed(object sender, ExceptionRoutedEventArgs e)
+		{
 			SendEvent(e.ToString());
 		}
 
-		void media_MediaEnded(object sender, RoutedEventArgs e) {
+		private void media_MediaEnded(object sender, RoutedEventArgs e)
+		{
 			_isEnded = true;
 			_isPaused = false;
 			SendEvent("ended");
 			StopTimer();
 		}
 
-		void media_CurrentStateChanged(object sender, RoutedEventArgs e) {
-
-			WriteDebug("state:" + media.CurrentState.ToString());
+		private void media_CurrentStateChanged(object sender, RoutedEventArgs e)
+		{
+			txtState.Text = "State: " + media.CurrentState;
 
 			switch (media.CurrentState)
 			{
@@ -227,7 +264,6 @@ namespace SilverlightMediaElement
 					_isAttemptingToPlay = false;
 					StartTimer();
 
-
 					SendEvent("play");
 					SendEvent("playing");
 					break;
@@ -238,8 +274,9 @@ namespace SilverlightMediaElement
 
 					// special settings to allow play() to work
 					_isLoading = false;
-					WriteDebug("paused event, " + _isAttemptingToPlay);
-					if (_isAttemptingToPlay) {
+					txtLastMessage.Text = "Message: paused event, playing = " + _isAttemptingToPlay;
+					if (_isAttemptingToPlay)
+					{
 						this.playMedia();
 					}
 
@@ -256,32 +293,33 @@ namespace SilverlightMediaElement
 					SendEvent("progress");
 					break;
 			}
-		   
 		}
 
-		void media_BufferingProgressChanged(object sender, RoutedEventArgs e) {
-			_bufferedTime = media.DownloadProgress * media.NaturalDuration.TimeSpan.TotalSeconds;
-			_bufferedBytes = media.BufferingProgress;
-			
-			
-			SendEvent("progress");			
-		}
-
-		void media_DownloadProgressChanged(object sender, RoutedEventArgs e) {
+		private void media_BufferingProgressChanged(object sender, RoutedEventArgs e)
+		{
 			_bufferedTime = media.DownloadProgress * media.NaturalDuration.TimeSpan.TotalSeconds;
 			_bufferedBytes = media.BufferingProgress;
 
-			if (!_firedCanPlay) {
+			SendEvent("progress");
+		}
+
+		private void media_DownloadProgressChanged(object sender, RoutedEventArgs e)
+		{
+			_bufferedTime = media.DownloadProgress * media.NaturalDuration.TimeSpan.TotalSeconds;
+			_bufferedBytes = media.BufferingProgress;
+
+			if (!_firedCanPlay)
+			{
 				SendEvent("loadeddata");
 				SendEvent("canplay");
 				_firedCanPlay = true;
 			}
 
-			SendEvent("progress");			
+			SendEvent("progress");
 		}
-	 
 
-		void SendEvent(string name) {
+		private void SendEvent(string name)
+		{
 			/*
 			 * INVOKE
 			HtmlPage.Window.Invoke("html5_MediaPluginBridge_fireEvent", 
@@ -317,41 +355,56 @@ namespace SilverlightMediaElement
 			 * */
 
 			// setTimeout
-			try {
-				CultureInfo invCulture = CultureInfo.InvariantCulture;
+			try
+			{
+				var invCulture = CultureInfo.InvariantCulture;
 
 				HtmlPage.Window.Invoke("setTimeout", "mejs.MediaPluginBridge.fireEvent('" + _htmlid + "','" + name + "'," +
-				@"{" +
-						@"""name"": """ + name + @"""" +
-						@", ""currentTime"":" + (media.Position.TotalSeconds).ToString(invCulture) + @"" +
-						@", ""duration"":" + (media.NaturalDuration.TimeSpan.TotalSeconds).ToString(invCulture) + @"" +
-						@", ""paused"":" + (_isPaused).ToString().ToLower() + @"" +
-						@", ""muted"":" + (media.IsMuted).ToString().ToLower() + @"" +
-						@", ""ended"":" + (_isEnded).ToString().ToLower() + @"" +
-						@", ""volume"":" + (media.Volume).ToString(invCulture) + @"" +
-						@", ""bufferedBytes"":" + (_bufferedBytes).ToString(invCulture) + @"" +
-						@", ""bufferedTime"":" + (_bufferedTime).ToString(invCulture) + @"" +
-						@", ""videoWidth"":" + (_videoWidth).ToString() + @"" +
-						@", ""videoHeight"":" + (_videoHeight).ToString() + @"" +
-				@"});", 0);
-			} catch { }
-
+				                                     @"{" +
+				                                     @"""name"": """ + name + @"""" +
+				                                     @", ""currentTime"":" + (media.Position.TotalSeconds).ToString(invCulture)
+				                                     + @"" +
+				                                     @", ""duration"":"
+				                                     + (media.NaturalDuration.TimeSpan.TotalSeconds).ToString(invCulture) + @"" +
+				                                     @", ""paused"":" + (_isPaused).ToString().ToLower() + @"" +
+				                                     @", ""muted"":" + (media.IsMuted).ToString().ToLower() + @"" +
+				                                     @", ""ended"":" + (_isEnded).ToString().ToLower() + @"" +
+				                                     @", ""volume"":" + (media.Volume).ToString(invCulture) + @"" +
+				                                     @", ""bufferedBytes"":" + (_bufferedBytes).ToString(invCulture) + @"" +
+				                                     @", ""bufferedTime"":" + (_bufferedTime).ToString(invCulture) + @"" +
+				                                     @", ""videoWidth"":" + (_videoWidth) + @"" +
+				                                     @", ""videoHeight"":" + (_videoHeight) + @"" +
+				                                     @"});", 0);
+			}
+			catch
+			{
+			}
 		}
 
 		/* HTML5 wrapper methods */
+
 		[ScriptableMember]
-		public void playMedia() {
-			WriteDebug("method:play " + media.CurrentState);
+		public void playMedia()
+		{
+			txtLastMessage.Text = "Message: method:play " + media.CurrentState;
 
 			// sometimes people forget to call load() first
-			if (_mediaUrl != "" && media.Source == null) {
-				_isAttemptingToPlay = true;
-				loadMedia();
+			if (_mediaUrl != "" && media.Source == null)
+			{
+				var uri = new Uri(_mediaUrl, UriKind.Absolute);
+				var path = String.Format("{0}{1}{2}", uri.Scheme, Uri.SchemeDelimiter, uri.AbsolutePath);
+				var ext = Path.GetExtension(path);
+				if (ext.ToLowerInvariant() != ".m3u8" || (ext.ToLowerInvariant() == ".m3u8" && _mss == null))
+				{
+					_isAttemptingToPlay = true;
+					loadMedia();
+				}
 			}
 
 			// store and trigger with the state change above
-			if (media.CurrentState == MediaElementState.Closed && _isLoading) {
-				WriteDebug("storing _isAttemptingToPlay ");
+			if (media.CurrentState == MediaElementState.Closed && _isLoading)
+			{
+				txtLastMessage.Text = "Message: storing _isAttemptingToPlay ";
 				_isAttemptingToPlay = true;
 			}
 
@@ -359,51 +412,80 @@ namespace SilverlightMediaElement
 			_isEnded = false;
 			_isPaused = false;
 
-            playPauseButton.IsChecked = true;
+			playPauseButton.IsChecked = true;
 
 			//StartTimer();
 		}
 
 		[ScriptableMember]
-		public void pauseMedia() {
-			WriteDebug("method:pause " + media.CurrentState);
+		public void pauseMedia()
+		{
+			txtLastMessage.Text = "Message: method:pause " + media.CurrentState;
 
 			_isEnded = false;
 			_isPaused = true;
-			
+
 			media.Pause();
 			StopTimer();
-            playPauseButton.IsChecked = false;
+			playPauseButton.IsChecked = false;
 		}
 
 		[ScriptableMember]
-		public void loadMedia() {
+		public void loadMedia()
+		{
 			_isLoading = true;
 			_firedCanPlay = false;
 
-			WriteDebug("method:load " + media.CurrentState);
-			WriteDebug(" - " + _mediaUrl.ToString());
+			txtLastMessage.Text = "Message: method:load " + media.CurrentState + " " + _mediaUrl;
 
+			var uri = new Uri(_mediaUrl, UriKind.Absolute);
+			var path = String.Format("{0}{1}{2}", uri.Scheme, Uri.SchemeDelimiter, uri.AbsolutePath);
+			var ext = Path.GetExtension(path);
 			media.Source = new Uri(_mediaUrl, UriKind.Absolute);
+			if (ext.ToLowerInvariant() == ".m3u8")
+			{
+				var openParam = new HLSMediaStreamSourceOpenParam();
+				openParam.uri = uri;
+				if (_mss != null)
+				{
+					_mss.Dispose();
+				}
+				_mss = new HLSMediaStreamSource(openParam);
+				_mss.BufferLength = this._bufferLength;
+				_mss.Playback.DownloadBitrateChanged += Async_DownloadBitrateChanged;
+				_mss.Playback.PlaybackBitrateChanged += Async_PlaybackBitrateChanged;
+				_mss.Playback.MediaFileChanged += Async_MediaFileChanged;
+				_mss.Playback.VariantSelector = this;
+				media.SetSource(this._mss);
+				this._bitrateCommand = BitrateCommand.Auto;
+
+				DispatcherTimer dispatcherTimer = new DispatcherTimer();
+				dispatcherTimer.Interval = new TimeSpan(0, 0, 0, 0, 500);
+				dispatcherTimer.Tick += new EventHandler(this.Timer_Tick);
+				dispatcherTimer.Start();
+
+			}
 			//media.Play();
 			//media.Stop();
 		}
 
 		[ScriptableMember]
-		public void stopMedia() {
-			WriteDebug("method:stop " + media.CurrentState);
+		public void stopMedia()
+		{
+			txtLastMessage.Text = "Message: method:stop " + media.CurrentState;
 
 			_isEnded = true;
 			_isPaused = false;
 
 			media.Stop();
 			StopTimer();
-            playPauseButton.IsChecked = false;
+			playPauseButton.IsChecked = false;
 		}
 
 		[ScriptableMember]
-		public void setVolume(Double volume) {
-			WriteDebug("method:setvolume: " + volume.ToString());
+		public void setVolume(Double volume)
+		{
+			txtLastMessage.Text = "Message: method:setvolume: " + volume;
 
 			media.Volume = volume;
 
@@ -411,20 +493,21 @@ namespace SilverlightMediaElement
 		}
 
 		[ScriptableMember]
-		public void setMuted(bool isMuted) {
-			WriteDebug("method:setmuted: " + isMuted.ToString());
+		public void setMuted(bool isMuted)
+		{
+			txtLastMessage.Text = "Message: method:setmuted: " + isMuted;
 
 			media.IsMuted = isMuted;
-            muteButton.IsChecked = isMuted;
+			muteButton.IsChecked = isMuted;
 			SendEvent("volumechange");
-
 		}
 
 		[ScriptableMember]
-		public void setCurrentTime(Double position) {
-			WriteDebug("method:setCurrentTime: " + position.ToString());
+		public void setCurrentTime(Double position)
+		{
+			txtLastMessage.Text = "Message: method:setCurrentTime: " + position;
 
-			int milliseconds = Convert.ToInt32(position * 1000);
+			var milliseconds = Convert.ToInt32(position * 1000);
 
 			SendEvent("seeking");
 			media.Position = new TimeSpan(0, 0, 0, 0, milliseconds);
@@ -432,205 +515,411 @@ namespace SilverlightMediaElement
 		}
 
 		[ScriptableMember]
-		public void setSrc(string url) {
+		public void setSrc(string url)
+		{
 			_mediaUrl = url;
 		}
 
 		[ScriptableMember]
-		public void setFullscreen(bool goFullscreen) {
-
-			FullscreenButton.Visibility = System.Windows.Visibility.Visible;
+		public void setFullscreen(bool goFullscreen)
+		{
+			FullscreenButton.Visibility = Visibility.Visible;
 		}
 
 		[ScriptableMember]
-		public void setVideoSize(int width, int height) {
+		public void setVideoSize(int width, int height)
+		{
 			this.Width = media.Width = width;
 			this.Height = media.Height = height;
 		}
 
-        [ScriptableMember]
-		public void positionFullscreenButton(int x, int y,bool visibleAndAbove) {
-            if (visibleAndAbove)
-            {
-                //FullscreenButton.Visibility = System.Windows.Visibility.Collapsed;
-            }
-            else
-            {
-                //FullscreenButton.Visibility = System.Windows.Visibility.Visible;
-            }
+		[ScriptableMember]
+		public void positionFullscreenButton(int x, int y, bool visibleAndAbove)
+		{
+			if (visibleAndAbove)
+			{
+				//FullscreenButton.Visibility = System.Windows.Visibility.Collapsed;
+			}
+			else
+			{
+				//FullscreenButton.Visibility = System.Windows.Visibility.Visible;
+			}
 		}
 
-		private void FullscreenButton_Click(object sender, RoutedEventArgs e) {
+		private void FullscreenButton_Click(object sender, RoutedEventArgs e)
+		{
 			Application.Current.Host.Content.IsFullScreen = true;
 			//FullscreenButton.Visibility = System.Windows.Visibility.Collapsed;
 		}
 
-		private void DisplaySizeInformation(Object sender, EventArgs e) {
+		private void DisplaySizeInformation(Object sender, EventArgs e)
+		{
 			this.Width = LayoutRoot.Width = media.Width = Application.Current.Host.Content.ActualWidth;
 			this.Height = LayoutRoot.Height = media.Height = Application.Current.Host.Content.ActualHeight;
 
-            UpdateVideoSize();
+			UpdateVideoSize();
 		}
 
+		#region play button
 
+		private void BigPlayButton_Click(object sender, RoutedEventArgs e)
+		{
+			playPauseButton.IsChecked = true;
+			PlayPauseButton_Click(sender, e);
+		}
 
+		private void PlayPauseButton_Click(object sender, RoutedEventArgs e)
+		{
+			bigPlayButton.Visibility = Visibility.Collapsed;
 
-        #region play button
+			// this will be the toggle button state after the click has been processed
+			if (playPauseButton.IsChecked == true)
+			{
+				playMedia();
+			}
+			else
+			{
+				pauseMedia();
+			}
+		}
 
-        private void BigPlayButton_Click(object sender, RoutedEventArgs e)
-        {
-            playPauseButton.IsChecked = true;
-            PlayPauseButton_Click(sender, e);
-        }
+		#endregion
 
-        private void PlayPauseButton_Click(object sender, RoutedEventArgs e)
-        {
-            bigPlayButton.Visibility = Visibility.Collapsed;
+		#region timelineSlider
 
-            // this will be the toggle button state after the click has been processed
-            if (playPauseButton.IsChecked == true)
-                playMedia();
-            else
-                pauseMedia();
-        }
+		private void Seek(double percentComplete)
+		{
+			if (duringTickEvent)
+			{
+				throw new Exception("Can't call Seek() now, you'll get an infinite loop");
+			}
 
-       
+			var duration = media.NaturalDuration.TimeSpan;
+			var newPosition = (int)(duration.TotalSeconds * percentComplete);
+			media.Position = new TimeSpan(0, 0, newPosition);
 
-        #endregion
+			// let the next CompositionTarget.Rendering take care of updating the text blocks
+		}
 
-        #region timelineSlider
+		private Slider GetSliderParent(object sender)
+		{
+			var element = (FrameworkElement)sender;
+			do
+			{
+				element = (FrameworkElement)VisualTreeHelper.GetParent(element);
+			}
+			while (!(element is Slider));
+			return (Slider)element;
+		}
 
-        private void Seek(double percentComplete)
-        {
-            if (duringTickEvent)
-                throw new Exception("Can't call Seek() now, you'll get an infinite loop");
+		private void LeftTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+		{
+			e.Handled = true;
+			var lefttrack = (sender as FrameworkElement).FindName("LeftTrack") as FrameworkElement;
+			var righttrack = (sender as FrameworkElement).FindName("RightTrack") as FrameworkElement;
+			var position = e.GetPosition(lefttrack).X;
+			var width =
+				righttrack.TransformToVisual(lefttrack).Transform(new Point(righttrack.ActualWidth, righttrack.ActualHeight)).X;
+			var percent = position / width;
+			var slider = GetSliderParent(sender);
+			slider.Value = percent;
+		}
 
-            TimeSpan duration = media.NaturalDuration.TimeSpan;
-            int newPosition = (int)(duration.TotalSeconds * percentComplete);
-            media.Position = new TimeSpan(0, 0, newPosition);
+		private void HorizontalThumb_DragStarted(object sender, DragStartedEventArgs e)
+		{
+			if (GetSliderParent(sender) != timelineSlider)
+			{
+				return;
+			}
 
-            // let the next CompositionTarget.Rendering take care of updating the text blocks
-        }
+			var notPlaying = (media.CurrentState == MediaElementState.Paused
+			                  || media.CurrentState == MediaElementState.Stopped);
 
-        private Slider GetSliderParent(object sender)
-        {
-            FrameworkElement element = (FrameworkElement)sender;
-            do
-            {
-                element = (FrameworkElement)VisualTreeHelper.GetParent(element);
-            } while (!(element is Slider));
-            return (Slider)element;
-        }
+			if (notPlaying)
+			{
+				playVideoWhenSliderDragIsOver = false;
+			}
+			else
+			{
+				playVideoWhenSliderDragIsOver = true;
+				media.Pause();
+			}
+		}
 
-        private void LeftTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            e.Handled = true;
-            FrameworkElement lefttrack = (sender as FrameworkElement).FindName("LeftTrack") as FrameworkElement;
-            FrameworkElement righttrack = (sender as FrameworkElement).FindName("RightTrack") as FrameworkElement;
-            double position = e.GetPosition(lefttrack).X;
-            double width = righttrack.TransformToVisual(lefttrack).Transform(new Point(righttrack.ActualWidth, righttrack.ActualHeight)).X;
-            double percent = position / width;
-            Slider slider = GetSliderParent(sender);
-            slider.Value = percent;
-        }
+		private void HorizontalThumb_DragCompleted(object sender, DragCompletedEventArgs e)
+		{
+			if (playVideoWhenSliderDragIsOver)
+			{
+				media.Play();
+			}
+		}
 
-        private void HorizontalThumb_DragStarted(object sender, System.Windows.Controls.Primitives.DragStartedEventArgs e)
-        {
-            if (GetSliderParent(sender) != timelineSlider) return;
+		private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+		{
+			if (duringTickEvent)
+			{
+				return;
+			}
 
-            bool notPlaying = (media.CurrentState == MediaElementState.Paused
-                || media.CurrentState == MediaElementState.Stopped);
+			Seek(timelineSlider.Value);
+		}
 
-            if (notPlaying)
-            {
-                playVideoWhenSliderDragIsOver = false;
-            }
-            else
-            {
-                playVideoWhenSliderDragIsOver = true;
-                media.Pause();
-            }
-        }
+		#endregion
 
-        private void HorizontalThumb_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
-        {
-            if (playVideoWhenSliderDragIsOver)
-                media.Play();
-        }
+		#region updating current time
 
-        private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-        {
-            if (duringTickEvent)
-                return;
+		private void CompositionTarget_Rendering(object sender, EventArgs e)
+		{
+			duringTickEvent = true;
 
-            Seek(timelineSlider.Value);
-        }
+			var duration = media.NaturalDuration.TimeSpan;
+			if (duration.TotalSeconds != 0)
+			{
+				var percentComplete = (media.Position.TotalSeconds / duration.TotalSeconds);
+				timelineSlider.Value = percentComplete;
+				var text = TimeSpanToString(media.Position);
+				if (this.currentTimeTextBlock.Text != text)
+				{
+					this.currentTimeTextBlock.Text = text;
+				}
+			}
 
-        #endregion
+			duringTickEvent = false;
+		}
 
-        #region updating current time
+		private static string TimeSpanToString(TimeSpan time)
+		{
+			return string.Format("{0:00}:{1:00}", (time.Hours * 60) + time.Minutes, time.Seconds);
+		}
 
-        private void CompositionTarget_Rendering(object sender, EventArgs e)
-        {
-            duringTickEvent = true;
+		#endregion
 
-            TimeSpan duration = media.NaturalDuration.TimeSpan;
-            if (duration.TotalSeconds != 0)
-            {
-                double percentComplete = (media.Position.TotalSeconds / duration.TotalSeconds);
-                timelineSlider.Value = percentComplete;
-                string text = TimeSpanToString(media.Position);
-                if (this.currentTimeTextBlock.Text != text)
-                    this.currentTimeTextBlock.Text = text;
-            }
+		private void MuteButton_Click(object sender, RoutedEventArgs e)
+		{
+			//media.IsMuted = (bool)muteButton.IsChecked;
+			setMuted((bool)muteButton.IsChecked);
+		}
 
-            duringTickEvent = false;
-        }
+		#region fullscreen mode
 
-        private static string TimeSpanToString(TimeSpan time)
-        {
-            return string.Format("{0:00}:{1:00}", (time.Hours * 60) + time.Minutes, time.Seconds);
-        }
-        #endregion
+		private void FullScreenButton_Click(object sender, RoutedEventArgs e)
+		{
+			var content = Application.Current.Host.Content;
+			content.IsFullScreen = !content.IsFullScreen;
+		}
 
-        private void MuteButton_Click(object sender, RoutedEventArgs e)
-        {
-            //media.IsMuted = (bool)muteButton.IsChecked;
-            setMuted((bool)muteButton.IsChecked);
-        }
+		private void Content_FullScreenChanged(object sender, EventArgs e)
+		{
+			UpdateVideoSize();
+		}
 
-        #region fullscreen mode
+		private void UpdateVideoSize()
+		{
+			if (Application.Current.Host.Content.IsFullScreen)
+			{
+				transportControls.Visibility = Visibility.Visible;
+				// mediaElement takes all available space
+				//VideoRow.Height = new GridLength(1, GridUnitType.Star);
+				//VideoColumn.Width = new GridLength(1, GridUnitType.Star);
+			}
+			else
+			{
+				transportControls.Visibility = Visibility.Collapsed;
+				// mediaElement is only as big as the source video
+				//VideoRow.Height = new GridLength(1, GridUnitType.Auto);
+				//VideoColumn.Width = new GridLength(1, GridUnitType.Auto);
+			}
+		}
 
-        private void FullScreenButton_Click(object sender, RoutedEventArgs e)
-        {
-            var content = Application.Current.Host.Content;
-            content.IsFullScreen = !content.IsFullScreen;
-        }
+		#endregion
 
-        private void Content_FullScreenChanged(object sender, EventArgs e)
-        {
-            UpdateVideoSize();
-        }
+		private enum BitrateCommand
+		{
+			IncreaseBitrate,
+			DecreaseBitrate,
+			Random,
+			DoNotChange,
+			Auto,
+		}
 
-        private void UpdateVideoSize()
-        {
-            if (App.Current.Host.Content.IsFullScreen)
-            {
-                transportControls.Visibility = System.Windows.Visibility.Visible;
-                // mediaElement takes all available space
-                //VideoRow.Height = new GridLength(1, GridUnitType.Star);
-                //VideoColumn.Width = new GridLength(1, GridUnitType.Star);
-            }
-            else
-            {
-                transportControls.Visibility = System.Windows.Visibility.Collapsed;
-                // mediaElement is only as big as the source video
-                //VideoRow.Height = new GridLength(1, GridUnitType.Auto);
-                //VideoColumn.Width = new GridLength(1, GridUnitType.Auto);
-            }
-        }
+		private class HLSVariantBitrateComparer : IComparer<HLSVariant>
+		{
+			public int Compare(HLSVariant x, HLSVariant y)
+			{
+				if (x == null)
+				{
+					return 1;
+				}
+				if (y == null)
+				{
+					return -1;
+				}
+				else
+				{
+					return (int)x.Bitrate == (int)y.Bitrate ? 0 : (x.Bitrate < y.Bitrate ? -1 : 1);
+				}
+			}
+		}
 
-        #endregion
+		private void Async_MediaFileChanged(object sender, Uri uri)
+		{
+			this.Dispatcher.BeginInvoke(new Action<object, Uri>(this.Playback_MediaFileChanged), new object[2]
+			                                                                                     	{
+			                                                                                     		sender,
+			                                                                                     		uri
+			                                                                                     	});
+		}
+
+		private void Playback_MediaFileChanged(object sender, Uri uri)
+		{
+			txtFile.Text = "File: " + uri.ToString();
+		}
+
+		private void Async_DownloadBitrateChanged(object sender, uint newBandwidth)
+		{
+			this.Dispatcher.BeginInvoke(new Action<uint>(this.MSS_OnDownloadBitrateChanged), new object[1]
+			                                                                                 	{
+			                                                                                 		newBandwidth
+			                                                                                 	});
+		}
+
+		private void Async_PlaybackBitrateChanged(object sender, uint newBandwidth)
+		{
+			this.Dispatcher.BeginInvoke(new Action<uint>(this.MSS_OnPlaybackBitrateChanged), new object[1]
+			                                                                                 	{
+			                                                                                 		newBandwidth
+			                                                                                 	});
+		}
+
+		private void MSS_OnPlaybackBitrateChanged(uint newBandwidth)
+		{
+			txtPlaybackQuality.Text = "PB Quality: " + newBandwidth + " bps";
+		}
+
+		private void MSS_OnDownloadBitrateChanged(uint newBandwidth)
+		{
+			txtDownloadQuality.Text = "DL Quality: " + newBandwidth + " bps";
+		}
+
+		private void Timer_Tick(object sender, EventArgs e)
+		{
+			string[] strArray1 = new string[10];
+			strArray1[0] = "Buffer Level: ";
+			string[] strArray2 = strArray1;
+			int index = 1;
+			TimeSpan timeSpan = this._mss.BufferLevel;
+			double num = timeSpan.TotalMilliseconds * 100.0;
+			timeSpan = this._bufferLength;
+			double totalMilliseconds = timeSpan.TotalMilliseconds;
+			string str1 = ((int)(num / totalMilliseconds)).ToString();
+			strArray2[index] = str1;
+			strArray1[2] = "% ";
+			strArray1[3] = ((int)this._mss.BufferLevel.TotalMilliseconds).ToString();
+			strArray1[4] = "ms ";
+			strArray1[5] = (this._mss.BufferLevelInBytes / 1024L).ToString();
+			strArray1[6] = "KB  Bandwidth:";
+			strArray1[7] = this._mss.BandwidthHistory.GetAverageBandwidth().ToString("#,##;(#,##)");
+			strArray1[8] = " bps Time:";
+			strArray1[9] = this.media.Position.ToString("hh\\:mm\\:ss");
+			string str2 = string.Concat(strArray1);
+			txtBuffer.Text = str2;
+			if (this._sortedAvailableVariants != null)
+			{
+				txtAvailable.Text = "Available: ";
+				txtAvailable.Text += _sortedAvailableVariants.Count.ToString() + " - ";
+				foreach (HLSVariant hlsVariant in this._sortedAvailableVariants)
+				{
+					txtAvailable.Text += hlsVariant.Bitrate.ToString("#,##;(#,##)") + " bps; ";
+				}
+			}
+			if (this._bitrateCommand != BitrateCommand.DoNotChange)
+				return;
+		}
+
+		public void SelectVariant(HLSVariant previousVariant, HLSVariant heuristicSuggestedVariant, ref HLSVariant nextVariant,
+		                          List<HLSVariant> availableSortedVariants)
+		{
+			if (this._sortedAvailableVariants == null)
+			{
+				this._sortedAvailableVariants = new List<HLSVariant>(availableSortedVariants);
+				for (var index1 = 0; index1 < this._sortedAvailableVariants.Count; ++index1)
+				{
+					for (var index2 = index1 + 1; index2 < this._sortedAvailableVariants.Count; ++index2)
+					{
+						Debug.Assert(this._sortedAvailableVariants[index1].ProgramId == this._sortedAvailableVariants[index2].ProgramId,
+						             "The HLS Sample does not support playlists with different program IDs");
+						if ((int)this._sortedAvailableVariants[index1].Bitrate == (int)this._sortedAvailableVariants[index2].Bitrate)
+						{
+							this._sortedAvailableVariants.RemoveAt(index2);
+						}
+					}
+				}
+				this._sortedAvailableVariants.Sort(new HLSVariantBitrateComparer());
+				while (this._sortedAvailableVariants.Count > 0
+				       && ((int)this._sortedAvailableVariants[0].Bitrate != 0 && this._sortedAvailableVariants[0].Bitrate < 100000U))
+				{
+					this._sortedAvailableVariants.RemoveAt(0);
+				}
+			}
+			if (!this._sortedAvailableVariants.Contains(heuristicSuggestedVariant))
+			{
+				var index = 0;
+				while (index < this._sortedAvailableVariants.Count - 1
+				       &&
+				       (heuristicSuggestedVariant.Bitrate >= this._sortedAvailableVariants[index].Bitrate
+				        &&
+				        (heuristicSuggestedVariant.Bitrate < this._sortedAvailableVariants[index].Bitrate
+				         || heuristicSuggestedVariant.Bitrate >= this._sortedAvailableVariants[index + 1].Bitrate)))
+				{
+					++index;
+				}
+				heuristicSuggestedVariant = this._sortedAvailableVariants[index];
+			}
+			if (previousVariant == null)
+			{
+				nextVariant = heuristicSuggestedVariant;
+			}
+			else
+			{
+				switch (this._bitrateCommand)
+				{
+					case BitrateCommand.IncreaseBitrate:
+						foreach (var hlsVariant in this._sortedAvailableVariants)
+						{
+							if (hlsVariant.Bitrate > previousVariant.Bitrate)
+							{
+								nextVariant = hlsVariant;
+								break;
+							}
+						}
+						this._bitrateCommand = BitrateCommand.DoNotChange;
+						break;
+					case BitrateCommand.DecreaseBitrate:
+						foreach (var hlsVariant in this._sortedAvailableVariants)
+						{
+							if (hlsVariant.Bitrate < previousVariant.Bitrate)
+							{
+								nextVariant = hlsVariant;
+							}
+							else
+							{
+								break;
+							}
+						}
+						this._bitrateCommand = BitrateCommand.DoNotChange;
+						break;
+					case BitrateCommand.Random:
+						var random = new Random();
+						nextVariant = this._sortedAvailableVariants[random.Next(0, this._sortedAvailableVariants.Count - 1)];
+						break;
+					case BitrateCommand.DoNotChange:
+						nextVariant = previousVariant;
+						break;
+					case BitrateCommand.Auto:
+						nextVariant = heuristicSuggestedVariant;
+						break;
+				}
+			}
+		}
 	}
 }
-

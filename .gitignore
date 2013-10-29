@@ -8,3 +8,10 @@ build/SilverlightMediaElement.dll
 tests/*
 newfeatures/*
 /mejs3/
+src/silverlight/test/
+src/silverlight/_ReSharper.SilverlightMediaElement/
+src/silverlight/SilverlightMediaElement.5.1.ReSharper.user
+src/silverlight/SilverlightMediaElement.ncrunchsolution
+src/silverlight/SilverlightMediaElement.ncrunchsolution.user
+src/silverlight/SilverlightMediaElement.sln.docstates.suo
+src/silverlight/SilverlightMediaElement.suo

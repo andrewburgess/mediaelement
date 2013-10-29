@@ -7,7 +7,7 @@
 	xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vsm="clr-namespace:System.Windows;assembly=System.Windows"
     mc:Ignorable="d"
-    Width="640" Height="360">
+    Width="640" Height="360" xmlns:sdk="http://schemas.microsoft.com/winfx/2006/xaml/presentation/sdk">
     <UserControl.Resources>
         <Style x:Key="roundThumbStyle" TargetType="Thumb">
             <Setter Property="Template">
@@ -209,7 +209,6 @@
                   Data="F1 M 75.4621,51.1667L 34.6439,27.6003L 34.6439,74.7331L 75.4621,51.1667 Z "/>
             </Canvas>
         </Button>
-        <TextBox Margin="25,25,0,0" Name="textBox1" VerticalScrollBarVisibility="Auto" Height="146" VerticalAlignment="Top" HorizontalAlignment="Left" Width="235" />
         <Button Content="" Height="36" HorizontalAlignment="Right" x:Name="FullscreenButton" VerticalAlignment="Bottom" Width="31" Click="FullscreenButton_Click" Opacity="0" Background="#00000000" Cursor="Hand" />
 
         <Grid x:Name="transportControls" VerticalAlignment="Bottom" Height="40" Background="#FF000000"
@@ -272,5 +271,15 @@
                   Fill="#FF7F7F7F" Stretch="Fill" Stroke="#FF000000" StrokeThickness="0" />
             </Button>
         </Grid>
-    </Grid>
+		<StackPanel Height="227" Margin="40,32,26,0" Name="debugPanel" VerticalAlignment="Top">
+			<TextBlock Height="23" Name="txtId" Text="ID: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtFile" Text="File: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtState" Text="State: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtBuffer" Text="Buffer: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtDownloadQuality" Text="DL Quality: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtPlaybackQuality" Text="PB Quality: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtAvailable" Text="Available: " Foreground="Lime" />
+			<TextBlock Height="23" Name="txtLastMessage" Text="Message: " Foreground="Lime" />
+		</StackPanel>
+	</Grid>
 </UserControl>
