@@ -40,6 +40,7 @@ namespace SilverlightMediaElement
 		private readonly double _volume = 1;
 		private int _videoWidth;
 		private int _videoHeight;
+		private string _sourceFormat;
 
 		// state
 		private bool _isPaused = true;
@@ -122,6 +123,10 @@ namespace SilverlightMediaElement
 			if (initParams.ContainsKey("startvolume"))
 			{
 				Double.TryParse(initParams["startvolume"], out _volume);
+			}
+			if (initParams.ContainsKey("format"))
+			{
+				_sourceFormat = initParams["format"];
 			}
 
 			if (_timerRate == 0)
@@ -394,7 +399,8 @@ namespace SilverlightMediaElement
 				var uri = new Uri(_mediaUrl, UriKind.Absolute);
 				var path = String.Format("{0}{1}{2}", uri.Scheme, Uri.SchemeDelimiter, uri.AbsolutePath);
 				var ext = Path.GetExtension(path);
-				if (ext.ToLowerInvariant() != ".m3u8" || (ext.ToLowerInvariant() == ".m3u8" && _mss == null))
+				if ((ext.ToLowerInvariant() != ".m3u8" && _sourceFormat != "application/x-mpegURL") || 
+				   ((ext.ToLowerInvariant() == ".m3u8" || _sourceFormat == "application/x-mpegURL") && _mss == null))
 				{
 					_isAttemptingToPlay = true;
 					loadMedia();
@@ -442,7 +448,7 @@ namespace SilverlightMediaElement
 			var path = String.Format("{0}{1}{2}", uri.Scheme, Uri.SchemeDelimiter, uri.AbsolutePath);
 			var ext = Path.GetExtension(path);
 			media.Source = new Uri(_mediaUrl, UriKind.Absolute);
-			if (ext.ToLowerInvariant() == ".m3u8")
+			if (ext.ToLowerInvariant() == ".m3u8" || _sourceFormat == "application/x-mpegURL")
 			{
 				var openParam = new HLSMediaStreamSourceOpenParam();
 				openParam.uri = uri;
