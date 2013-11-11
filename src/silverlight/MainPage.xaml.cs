@@ -169,7 +169,7 @@ namespace SilverlightMediaElement
 				}
 			}
 
-			media.MouseLeftButtonUp += media_MouseLeftButtonUp;
+			//media.MouseLeftButtonUp += media_MouseLeftButtonUp;
 
 			// full screen settings
 			Application.Current.Host.Content.FullScreenChanged += DisplaySizeInformation;
@@ -287,12 +287,14 @@ namespace SilverlightMediaElement
 
 					StopTimer();
 					SendEvent("paused");
+					SendEvent("pause");
 					break;
 				case MediaElementState.Stopped:
 					_isEnded = false;
 					_isPaused = true;
 					StopTimer();
 					SendEvent("paused");
+					SendEvent("pause");
 					break;
 				case MediaElementState.Buffering:
 					SendEvent("progress");
