@@ -554,6 +554,12 @@ namespace SilverlightMediaElement
 			}
 		}
 
+		[ScriptableMember]
+		public void hideFullscreenButton()
+		{
+			// No-op because IE is awesome
+		}
+
 		private void FullscreenButton_Click(object sender, RoutedEventArgs e)
 		{
 			Application.Current.Host.Content.IsFullScreen = true;
